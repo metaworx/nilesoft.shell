@@ -1,3 +1,6 @@
+# Temporary Markdown cache
+*.md.html
+
 # Prerequisites
 *.d
 

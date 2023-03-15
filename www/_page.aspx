@@ -171,7 +171,7 @@
             <div class="content">
 <%
 
-If Not includePage(requestedFile) Then
+If Not includePage() Then
     Response.StatusCode = 404
 %>
 File Not Found

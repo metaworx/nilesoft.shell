@@ -5,6 +5,7 @@ Imports System.Globalization
 Imports System.Text.Json
 Imports System.XML
 Imports System.XML.Linq
+Imports Markdig
 
 Partial Class _Default
 
@@ -33,6 +34,8 @@ Friend Shared   requestMap      As String
 Friend Shared   requestedFile   As FileInfo
 Friend Shared   fileModified    As DateTime
 Friend Shared   fileUrl         As String
+
+Friend Shared   mdPipeline      As MarkdownPipeline = (New MarkdownPipelineBuilder()).UseAdvancedExtensions().Build()
 
 Private Shared  rgxRemoveIndex  As New Regex("(.*)(index)?\.html$")
 Private Shared  rgxReplaceDash  As New Regex("[-_]+")
@@ -73,7 +76,7 @@ Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Han
     requestMap    = projectRoot.FullName & requestUrl.replace("/", "\")
     requestedFile = New FileInfo(requestMap)
 
- End Sub
+End Sub
 
 
 ''' this is called from Default.aspx to actually include the requested content
@@ -96,50 +99,108 @@ Protected Function preparePage(pageFile As FileInfo, ByRef basename As String, B
         rootUrl         = "http://" & SERVER_NAME & if(SERVER_PORT = "80", "", ":" & SERVER_PORT)
     End If
 
-    ''' If the url ends with ".html", we just go for it
-    If Not pageFile.Extension.ToLower() = ".html" Then
-
-        ''' Otherwise try adding ".html" - This would be the case for a file in a directory
-        ''' E.g. /docs/installation should really load /docs/installation.html
-        suffix          = ".html"
-        dirInfo         = New DirectoryInfo(pageFile.FullName)
-        pageFile        = New FileInfo(pageFile.FullName & suffix)
-
-        ''' test, if file exists
-        If not pageFile.Exists Then
-
-            ''' otherwise it could be a directory, and we look for the "index.html"
-            ''' So test for the directory
-            If dirInfo.Exists Then
-
-                ''' If found, assume the default: index.html
-                suffix  = "index.html"
-                pageFile    = New FileInfo(dirInfo.FullName & "\" & suffix)
-
-            End If
-
-        End If
-
-    End If
+    pageFile    = determineFile(pageFile, suffix, basename, caption, fileModified)
 
     ''' Create helper urls for the bottom of the page
     gitUrl      = gitRootUrl & requestUrl & suffix
     fileUrl     = rgxRemoveIndex.Replace(rootUrl & requestUrl, "$1")
     nilesoftUrl = rgxRemoveIndex.Replace(nilesoftRoot & requestUrl, "$1")
 
-    If pageFile.Exists Then
-        fileModified = File.GetLastWriteTime(pageFile.FullName)
-    End If
-
-    extractNames(pageFile.Name, basename, caption)
-
     return pageFile
 
 End Function
 
+Protected Function determineFile(
+                    pageFile    As FileInfo,
+    Optional ByRef  suffix      As String       = "",
+    Optional ByRef  basename    As String       = "",
+    Optional ByRef  caption     As String       = "",
+    Optional ByRef  modified    As DateTime     = Nothing
+    ) As FileInfo
 
- ''' this is called from Default.aspx to actually include the requested content
-Protected Function includePage(pageFile As FileInfo) As Boolean
+    ''' If the url ends with ".html", we just go for it
+    If pageFile.Extension.ToLower() = ".html" Then
+        getFileInfo(pageFile, basename, caption, modified)
+        return pageFile
+    End If
+
+    Dim htmlFile    As FileInfo
+    Dim mdFile      As FileInfo
+    Dim dirInfo     As DirectoryInfo
+
+    ''' Otherwise try adding ".html" - This would be the case for a file in a directory
+    ''' E.g. /docs/installation should really load /docs/installation.html
+    suffix          = ".html"
+    htmlFile        = New FileInfo(pageFile.FullName & suffix)
+
+    If getFileInfo(htmlFile, basename, caption, modified) Then
+        return htmlFile
+    End If
+
+    suffix          = ".md"
+    mdFile          = New FileInfo(pageFile.FullName & suffix)
+    htmlFile        = New FileInfo(pageFile.FullName & suffix & ".html")
+
+    If getFileInfo(mdFile, basename, caption, modified) Then
+
+        If htmlFile.Exists And File.GetLastWriteTime(htmlFile.FullName) > File.GetLastWriteTime(mdFile.FullName) Then
+
+            return htmlFile
+
+        End If
+
+        File.WriteAllText(
+            htmlFile.FullName,
+            Markdown.ToHtml(
+                File.ReadAllText(mdFile.FullName),
+                mdPipeline
+            )
+        )
+
+        return htmlFile
+    End If
+
+    dirInfo         = New DirectoryInfo(pageFile.FullName)
+
+    ''' otherwise it could be a directory, and we look for the "index.html"
+    ''' So test for the directory
+    If dirInfo.Exists Then
+
+        ''' If found, assume the default: index.html
+        pageFile    = determineFile(New FileInfo(dirInfo.FullName & "\index" ), suffix, basename, caption, modified)
+        suffix      = "\index" & suffix
+
+        return pageFile
+
+    End If
+
+    return mdFile
+
+End Function
+
+
+''' this is called from Default.aspx to actually include the requested content
+Protected Function includePage(
+    pagePath As String
+    ) As Boolean
+
+    If pagePath = "" Then
+        return includePage()
+    Else
+        return includePage(New FileInfo(pagePath))
+    End If
+
+End Function
+
+
+''' this is called from Default.aspx to actually include the requested content
+Protected Function includePage(
+    Optional pageFile As FileInfo = Nothing
+    ) As Boolean
+
+    If pageFile Is Nothing
+        pageFile = requestedFile
+    End If
 
     If Not pageFile.Exists Then
         return false
@@ -148,7 +209,11 @@ Protected Function includePage(pageFile As FileInfo) As Boolean
     ' Open the stream and read it back.
     Dim sr As StreamReader = pageFile.OpenText()
 
-    Response.Write( sr.ReadToEnd() )
+    If pageFile.Extension.ToLower() = ".md" Then
+        Response.Write( Markdown.ToHtml(sr.ReadToEnd(), mdPipeline) )
+    Else
+        Response.Write( sr.ReadToEnd() )
+    End If
     sr.Close()
 
     return true
@@ -416,6 +481,24 @@ Protected Function PrintNavFS(ByVal initial As DirectoryInfo) As XElement
         return xmlRoot
 
 End function
+
+Protected Function getFileInfo(
+             ByRef  pageFile    As FileInfo,
+    Optional ByRef  basename    As String       = "",
+    Optional ByRef  caption     As String       = "",
+    Optional ByRef  modified    As DateTime     = Nothing
+    ) As Boolean
+
+    If Not pageFile.Exists Then
+        return false
+    End If
+
+    modified = File.GetLastWriteTime(pageFile.FullName)
+    extractNames(pageFile.Name, basename, caption)
+
+    return true
+
+End Function
 
 Protected Sub extractNames(ByVal path As String, ByRef basename As String, ByRef caption As String)
 
